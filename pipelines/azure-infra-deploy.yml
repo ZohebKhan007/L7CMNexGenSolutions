@@ -1,49 +1,56 @@
 trigger:
-  branches:
-    include: [ main ]
-  paths:
-    include: [ infra/** ]
+- main
 
 pool:
   vmImage: ubuntu-latest
 
 variables:
-  - name: ENV
-    value: dev                     # will change per branch or pipeline variable
-  - name: TF_WORKDIR
-    value: infra
-  - name: TFVARS
-    value: infra/environments/$(ENV).tfvars
+  TF_VERSION: '1.5.7'
 
 steps:
-- checkout: self
+# Install Terraform manually
+- script: |
+    echo "Installing Terraform $(TF_VERSION)..."
+    curl -LO https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip
+    unzip terraform_${TF_VERSION}_linux_amd64.zip
+    sudo mv terraform /usr/local/bin/
+    terraform version
+  displayName: 'Install Terraform'
 
-- task: TerraformInstaller@1
-  inputs:
-    terraformVersion: '1.6.6'
-
-- task: AzureCLI@2
-  displayName: 'Terraform Init/Plan/Apply'
-  inputs:
-    azureSubscription: 'rg-nexgen-platform'       # service connection name
-    scriptType: bash
-    scriptLocation: inlineScript
-    inlineScript: |
-      set -e
-      cd $(TF_WORKDIR)
-
-      # Backend is pre-configured in backend.tf
-      terraform init
-
-      terraform plan -var-file="$(TFVARS)" \
-        -var="django_secret=$(DJANGO_SECRET)" \
-        -var="sql_admin_pass=$(SQL_ADMIN_PASS)"
-
-      terraform apply -auto-approve -var-file="$(TFVARS)" \
-        -var="django_secret=$(DJANGO_SECRET)" \
-        -var="sql_admin_pass=$(SQL_ADMIN_PASS)"
+# Terraform Init
+- script: |
+    terraform init \
+      -backend-config="resource_group_name=rg-nexgen-platform" \
+      -backend-config="storage_account_name=stnexgenplatform" \
+      -backend-config="container_name=tfstate" \
+      -backend-config="key=dev.terraform.tfstate"
+  workingDirectory: infra
+  displayName: 'Terraform Init'
   env:
-    # For demo simplicity we’ll pass them from pipeline vars once,
-    # but in prod will use KV task to fetch them or will use Key Vault references on the app
-    DJANGO_SECRET: $(DJANGO_SECRET)
-    SQL_ADMIN_PASS: $(SQL_ADMIN_PASS)
+    ARM_USE_OIDC: true
+    ARM_CLIENT_ID: $(AZURE_CLIENT_ID)
+    ARM_TENANT_ID: $(AZURE_TENANT_ID)
+    ARM_SUBSCRIPTION_ID: $(AZURE_SUBSCRIPTION_ID)
+
+# Terraform Plan
+- script: |
+    terraform plan -input=false -out=tfplan \
+      -var-file=environments/dev.tfvars
+  workingDirectory: infra
+  displayName: 'Terraform Plan'
+  env:
+    ARM_USE_OIDC: true
+    ARM_CLIENT_ID: $(AZURE_CLIENT_ID)
+    ARM_TENANT_ID: $(AZURE_TENANT_ID)
+    ARM_SUBSCRIPTION_ID: $(AZURE_SUBSCRIPTION_ID)
+
+# Terraform Apply
+- script: |
+    terraform apply -input=false -auto-approve tfplan
+  workingDirectory: infra
+  displayName: 'Terraform Apply'
+  env:
+    ARM_USE_OIDC: true
+    ARM_CLIENT_ID: $(AZURE_CLIENT_ID)
+    ARM_TENANT_ID: $(AZURE_TENANT_ID)
+    ARM_SUBSCRIPTION_ID: $(AZURE_SUBSCRIPTION_ID)
